@@ -80,13 +80,13 @@ with open('movies.csv', 'w', newline='') as moviefile:
 				for cast in range(0,10):
 					aid = castmems[cast]['id']
 					if not aid in actorids:
-						actorids.push(aid)
+						actorids.append(aid)
 
 				for crew in crewmems:
 					if(crew['job']=="Director"):
 						did = crew['id']
 						if not did in directorids:
-							directorids.push(did)
+							directorids.append(did)
 
 				mtitle = mdata['title']
 				mbudget = mdata['budget']
