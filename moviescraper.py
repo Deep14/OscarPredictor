@@ -40,7 +40,9 @@ with open('movies.csv', 'w', newline='') as moviefile:
 	            "horror", "music", "mystery", "romance", "scifi", "thriller", 
 	            "war", "western", "original_language", "production_companies",
 	            "release_date", "revenue", "runtime", "popularity", "average_rating", 
-	            "num_votes"]
+	            "num_votes", "actor_1", "actor_2", "actor_3", "actor_4", "actor_5", 
+	            "actor_6", "actor_7", "actor_8", "actor_9", "actor_10", "director_1",
+	            "director_2", "director_3"]
 	moviewriter.writerow(headings)
 	#For each year in in the range [2001,2018)
 	for year in range(2001, 2018):
@@ -77,16 +79,28 @@ with open('movies.csv', 'w', newline='') as moviefile:
 				print(movie)
 
 				#First add in actor and director ids into a list of discovered ids
-				for cast in range(0,10):
+				maids = []
+				castsize = 10 if len(castmems) > 10 else len(castmems)
+				for cast in range(0,castsize):
 					aid = castmems[cast]['id']
 					if not aid in actorids:
 						actorids.append(aid)
+					maids.append(aid)
 
+				if len(maids) < 10:
+					for empty in range(len(maids), 10):
+						maids.append(-1)
+
+				daids = []
 				for crew in crewmems:
-					if(crew['job']=="Director"):
+					if(crew['job']=="Director" and len(daids) < 3):
 						did = crew['id']
 						if not did in directorids:
 							directorids.append(did)
+						daids.append(did)
+				if len(daids) < 3:
+					for empty in range(len(daids), 3):
+						daids.append(-1)
 
 				mtitle = mdata['title']
 				mbudget = mdata['budget']
@@ -127,10 +141,50 @@ with open('movies.csv', 'w', newline='') as moviefile:
 					[manimation]+[mcomedy]+[mcrime]+[mdocumentary]+[mdrama]+[mfamily]+
 					[mfantasy]+[mhistory]+[mhorror]+[mmusic]+[mmystery]+[mromance]+
 					[mscifi]+[mthriller]+[mwar]+[mwestern]+[moriglang]+[mprodcos]+
-					[mrelease]+[mrevenue]+[mruntime]+[mpop]+[mvoteavg]+[mvotes])
+					[mrelease]+[mrevenue]+[mruntime]+[mpop]+[mvoteavg]+[mvotes]+[maids]+[daids])
 			nexturl = "https://api.themoviedb.org/3/discover/movie?api_key=228cf3748fd87af5cbdcc0249cb68440&language=en-US&region=US&certification_country=US&certification.lte=R&include_adult=false&include_video=false&page="+str(page)+"&primary_release_year="+str(year)+"&year="+str(year)
 			payload = "{}"
 			response = requests.get( nexturl, params=payload)
 			time.sleep(.25)
 			data = json.loads(response.text)
 			movies = data['results']
+
+with open('directors.csv', 'w', newline='') as dirfile:
+	dirwriter = csv.writer(dirfile, delimiter = ",")
+	headings = ["did", "director_name", "movie_credits", "popularity"]
+	dirwriter.writerow(headings)
+	for director in directorids:
+		personurl = "https://api.themoviedb.org/3/person/"+str(director)+"?api_key=228cf3748fd87af5cbdcc0249cb68440&language=en-US"
+		payload = "{}"
+		response = requests.get(personurl, params = payload)
+		time.sleep(.25)
+		ddata = json.loads(response.text)
+		dname = ddata['name']
+		dpop = ddata['popularity']
+		pcreditsurl = "https://api.themoviedb.org/3/person/"+str(director)+"/movie_credits?api_key=228cf3748fd87af5cbdcc0249cb68440&language=en-US"
+		payload = "{}"
+		response = requests.get(pcreditsurl, params = payload)
+		time.sleep(.25)
+		creditsdata = json.loads(response.text)
+		crewcredits = len(creditsdata['crew'])
+		dirwriter.writerow([director]+[dname]+[crewcredits]+[dpop])
+
+with open('actors.csv', 'w', newline='') as actorfile:
+	actorwriter = csv.writer(actorfile, delimiter = ",")
+	headings = ["aid", "actor_name", "movie_credits", "popularity"]
+	dirwriter.writerow(headings)
+	for actor in actorids:
+		personurl = "https://api.themoviedb.org/3/person/"+str(actor)+"?api_key=228cf3748fd87af5cbdcc0249cb68440&language=en-US"
+		payload = "{}"
+		response = requests.get(personurl, params = payload)
+		time.sleep(.25)
+		adata = json.loads(response.text)
+		aname = adata['name']
+		apop = adata['popularity']
+		pcreditsurl = "https://api.themoviedb.org/3/person/"+str(actor)+"/movie_credits?api_key=228cf3748fd87af5cbdcc0249cb68440&language=en-US"
+		payload = "{}"
+		response = requests.get(pcreditsurl, params = payload)
+		time.sleep(.25)
+		creditsdata = json.loads(response.text)
+		castcredits = len(creditsdata['cast'])
+		dirwriter.writerow([actor]+[aname]+[castcredits]+[apop])
