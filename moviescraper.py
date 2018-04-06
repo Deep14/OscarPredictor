@@ -68,7 +68,7 @@ with open('movies.csv', 'w', newline='') as moviefile:
 				#get credits for that movie
 				creditsurl = "https://api.themoviedb.org/3/movie/"+str(mid)+"/credits?api_key=228cf3748fd87af5cbdcc0249cb68440"
 				payload = "{}"
-				response = requests.get(credits, params = payload)
+				response = requests.get(creditsurl, params = payload)
 				time.sleep(.25)
 				cdata = json.loads(response.text)
 				castmems = cdata['cast']
