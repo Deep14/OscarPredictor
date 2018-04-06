@@ -22,21 +22,29 @@ import json
 #Since we are also getting number of movie credits for directors and actors, we
 #are looking at a looot of requests to the api.
 #just to keep the amount of time this thing has to run to a reasonable amount,
-#we are limiting the credits to just the top 6 billed actors.
+#we are limiting the credits to just the top 10 billed actors.
 #I would experiment and get all of the actors' credits, but even modest estimates
 #of the number of api calls puts the total scraping time at about 52 hours.
+#Furthermore, for most movies, after 10 actors you begin getting into 
+#one-off characters and bit roles, so there is a bit of a diminishing return here.
+#Most movies are not on the scale of the Avengers, so this should be a safe bet.
+
+actorids = []
+directorids = []
 
 with open('movies.csv', 'w', newline='') as moviefile:
 	moviewriter = csv.writer(moviefile, delimiter = ",")
+	#write the headings to the movies csv
 	headings = ["mid", "title", "budget", "action", "adventure", "animation", "comedy",
 	            "crime", "documentary", "drama", "family", "fantasy", "history", 
 	            "horror", "music", "mystery", "romance", "scifi", "thriller", 
 	            "war", "western", "original_language", "production_companies",
 	            "release_date", "revenue", "runtime", "popularity", "average_rating", 
-	            "num_votes", "directors", "total_movie_credits_directors", "actors", "total"]
+	            "num_votes"]
 	moviewriter.writerow(headings)
 	#For each year in in the range [2001,2018)
 	for year in range(2001, 2018):
+		#discover movies fitting the criteria in the current year
 		initurl = "https://api.themoviedb.org/3/discover/movie?api_key=228cf3748fd87af5cbdcc0249cb68440&language=en-US&region=US&certification_country=US&certification.lte=R&include_adult=false&include_video=false&page=1&primary_release_year="+str(year)+"&year="+str(year)
 		payload = "{}"
 		response = requests.get(initurl, params=payload)
@@ -50,19 +58,35 @@ with open('movies.csv', 'w', newline='') as moviefile:
 			reslimit = numresults%20 if page == numpages else 20
 			#for each result on the page
 			for movie in range(0, reslimit):
+				#get data for a specific movie, given by mid
 				mid = movies[movie]['id']
 				movieurl = "https://api.themoviedb.org/3/movie/"+str(mid)+"?api_key=228cf3748fd87af5cbdcc0249cb68440&language=en-US"
 				payload = "{}"
 				response = requests.get(movieurl, params = payload)
 				time.sleep(.25)
 				mdata = json.loads(response.text)
+				#get credits for that movie
 				creditsurl = "https://api.themoviedb.org/3/movie/"+str(mid)+"/credits?api_key=228cf3748fd87af5cbdcc0249cb68440"
 				payload = "{}"
 				response = requests.get(credits, params = payload)
 				time.sleep(.25)
 				cdata = json.loads(response.text)
+				castmems = cdata['cast']
+				crewmems = cdata['crew']
 				print(mdata['title'])
 				print(movie)
+
+				#First add in actor and director ids into a list of discovered ids
+				for cast in range(0,10):
+					aid = castmems[cast]['id']
+					if not aid in actorids:
+						actorids.push(aid)
+
+				for crew in crewmems:
+					if(crew['job']=="Director"):
+						did = crew['id']
+						if not did in directorids:
+							directorids.push(did)
 
 				mtitle = mdata['title']
 				mbudget = mdata['budget']
