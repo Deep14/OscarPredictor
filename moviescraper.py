@@ -2,6 +2,7 @@ import csv
 import requests
 import time
 import json
+import io
 
 #api.API_KEY = '228cf3748fd87af5cbdcc0249cb68440'
 
@@ -32,7 +33,7 @@ import json
 actorids = []
 directorids = []
 
-with open('movies.csv', 'w', newline='') as moviefile:
+with io.open('movies.csv', 'w', newline='', encoding="utf-8") as moviefile:
 	moviewriter = csv.writer(moviefile, delimiter = ",")
 	#write the headings to the movies csv
 	headings = ["mid", "title", "budget", "action", "adventure", "animation", "comedy",
@@ -141,7 +142,9 @@ with open('movies.csv', 'w', newline='') as moviefile:
 					[manimation]+[mcomedy]+[mcrime]+[mdocumentary]+[mdrama]+[mfamily]+
 					[mfantasy]+[mhistory]+[mhorror]+[mmusic]+[mmystery]+[mromance]+
 					[mscifi]+[mthriller]+[mwar]+[mwestern]+[moriglang]+[mprodcos]+
-					[mrelease]+[mrevenue]+[mruntime]+[mpop]+[mvoteavg]+[mvotes]+[maids]+[daids])
+					[mrelease]+[mrevenue]+[mruntime]+[mpop]+[mvoteavg]+[mvotes]+
+					[maids[0]]+[maids[1]]+[maids[2]]+[maids[3]]+[maids[4]]+[maids[5]]+
+					[maids[6]]+[maids[7]]+[maids[8]]+[maids[9]]+[daids[0]]+[daids[1]]+[daids[2]])
 			nexturl = "https://api.themoviedb.org/3/discover/movie?api_key=228cf3748fd87af5cbdcc0249cb68440&language=en-US&region=US&certification_country=US&certification.lte=R&include_adult=false&include_video=false&page="+str(page)+"&primary_release_year="+str(year)+"&year="+str(year)
 			payload = "{}"
 			response = requests.get( nexturl, params=payload)
@@ -149,7 +152,7 @@ with open('movies.csv', 'w', newline='') as moviefile:
 			data = json.loads(response.text)
 			movies = data['results']
 
-with open('directors.csv', 'w', newline='') as dirfile:
+with open('directors.csv', 'w', newline='', encoding="utf-8") as dirfile:
 	dirwriter = csv.writer(dirfile, delimiter = ",")
 	headings = ["did", "director_name", "movie_credits", "popularity"]
 	dirwriter.writerow(headings)
@@ -169,10 +172,10 @@ with open('directors.csv', 'w', newline='') as dirfile:
 		crewcredits = len(creditsdata['crew'])
 		dirwriter.writerow([director]+[dname]+[crewcredits]+[dpop])
 
-with open('actors.csv', 'w', newline='') as actorfile:
+with open('actors.csv', 'w', newline='', encoding="utf-8") as actorfile:
 	actorwriter = csv.writer(actorfile, delimiter = ",")
 	headings = ["aid", "actor_name", "movie_credits", "popularity"]
-	dirwriter.writerow(headings)
+	actorwriter.writerow(headings)
 	for actor in actorids:
 		personurl = "https://api.themoviedb.org/3/person/"+str(actor)+"?api_key=228cf3748fd87af5cbdcc0249cb68440&language=en-US"
 		payload = "{}"
@@ -187,4 +190,4 @@ with open('actors.csv', 'w', newline='') as actorfile:
 		time.sleep(.25)
 		creditsdata = json.loads(response.text)
 		castcredits = len(creditsdata['cast'])
-		dirwriter.writerow([actor]+[aname]+[castcredits]+[apop])
+		actorwriter.writerow([actor]+[aname]+[castcredits]+[apop])
