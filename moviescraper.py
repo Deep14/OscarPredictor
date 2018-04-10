@@ -4,8 +4,6 @@ import time
 import json
 import io
 
-#api.API_KEY = '228cf3748fd87af5cbdcc0249cb68440'
-
 #We will use the api wrapper tmdbsimple to scrape the tmdb api for data.
 #Note that, while the Academy awards have been around since 1927,
 #The Animated Feature Film category has only existed since 2001 (the 75th awards).  Thus,
