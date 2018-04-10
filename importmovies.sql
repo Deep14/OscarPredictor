@@ -57,6 +57,14 @@ create table movies (
 	"director_3" integer
 );
 
+create table oscars(
+	"movie" text,
+	"year" integer,
+	"category" text,
+	"nominee" boolean,
+	"winner" boolean
+);
+
 .separator ","
 
 /*As with the writing of the table, this is relative to my file stystem.  Replace the path with wherever you put your file.
@@ -64,6 +72,7 @@ create table movies (
 .import "C:/Users/avg38/Documents/cornell/spring 2018/ds 4100/OscarPredictor/actors.csv" actors
 .import "C:/Users/avg38/Documents/cornell/spring 2018/ds 4100/OscarPredictor/directors.csv" directors
 .import "C:/Users/avg38/Documents/cornell/spring 2018/ds 4100/OscarPredictor/movies.csv" movies
+.import "C:/Users/avg38/Documents/cornell/spring 2018/ds 4100/OscarPredictor/oscarsdata.csv" oscars
 
 .headers on
 .mode column
