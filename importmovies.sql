@@ -57,12 +57,23 @@ create table movies (
 	"director_3" integer
 );
 
-create table oscars(
+create table movieoscars(
 	"movie" text,
 	"year" integer,
 	"category" text,
 	"nominee" boolean,
 	"winner" boolean
+);
+
+create table actoroscars(
+	"name" text,
+	"nominations" integer,
+	"wins" integer
+);
+create table directoroscars(
+	"name" text,
+	"nominations" integer,
+	"wins" integer
 );
 
 .separator ","
@@ -72,7 +83,9 @@ create table oscars(
 .import "C:/Users/avg38/Documents/cornell/spring 2018/ds 4100/OscarPredictor/actors.csv" actors
 .import "C:/Users/avg38/Documents/cornell/spring 2018/ds 4100/OscarPredictor/directors.csv" directors
 .import "C:/Users/avg38/Documents/cornell/spring 2018/ds 4100/OscarPredictor/movies.csv" movies
-.import "C:/Users/avg38/Documents/cornell/spring 2018/ds 4100/OscarPredictor/oscarsdata.csv" oscars
+.import "C:/Users/avg38/Documents/cornell/spring 2018/ds 4100/OscarPredictor/oscarsdata.csv" movieoscars
+.import "C:/Users/avg38/Documents/cornell/spring 2018/ds 4100/OscarPredictor/actorawardsdata.csv" actoroscars
+.import "C:/Users/avg38/Documents/cornell/spring 2018/ds 4100/OscarPredictor/directorawards.csv" directoroscars
 
 .headers on
 .mode column

@@ -38,3 +38,47 @@ with io.open("oscarsdata.csv", 'w', newline='', encoding="utf-8") as oscarfile:
 					oscarwriter.writerow([movie]+[year]+[catname]+[1]+[0])
 				else:
 					oscarwriter.writerow([movie]+[year]+[catname]+[0]+[1])
+
+#We will also use this script to get the number of nominations and awards for
+#actors and directors.
+
+#tackling the actors first:
+url = "http://awardsdatabase.oscars.org/Search/GetResults?query=%7B%22AwardCategory%22:[%229998%22],%22Sort%22:%221-Nominee-Alpha%22,%22Search%22:%22Basic%22%7D"
+browser.get(url)
+innerHTML = browser.execute_script("return document.body.innerHTML")
+soup = BeautifulSoup(innerHTML)
+with io.open("actorawardsdata.csv",'w', newline='', encoding="utf-8") as actorawardsfile:
+	aawriter = csv.writer(actorawardsfile)
+	headings = ["name", "nominations", "wins"]
+	aawriter.writerow(headings)
+	for result in soup.find_all("div", "group-nominee-alpha"):
+		name = result.div.div.div.a.text
+		awardsnoms = result.find("div", "result-subgroup")
+		noms = 0
+		wins = 0
+		for listing in awardsnoms.find_all("div", "row"):
+			if listing("span") == []:
+				noms = noms+1
+			else:
+				wins = wins+1
+		aawriter.writerow([name]+[noms]+[wins])
+
+url = "http://awardsdatabase.oscars.org/Search/GetResults?query=%7B%22AwardCategory%22:[%2210%22],%22Sort%22:%221-Nominee-Alpha%22,%22Search%22:%22Basic%22%7D"
+browser.get(url)
+innerHTML = browser.execute_script("return document.body.innerHTML")
+soup = BeautifulSoup(innerHTML)
+with io.open("directorawards.csv",'w', newline='', encoding="utf-8") as directorawardsfile:
+	dawriter = csv.writer(directorawardsfile)
+	headings = ["name", "nominations", "wins"]
+	dawriter.writerow(headings)
+	for result in soup.find_all("div", "group-nominee-alpha"):
+		name = result.div.div.div.a.text
+		awardsnoms = result.find("div", "result-subgroup")
+		noms = 0
+		wins = 0
+		for listing in awardsnoms.find_all("div", "row"):
+			if listing("span") == []:
+				noms = noms+1
+			else:
+				wins = wins+1
+		dawriter.writerow([name]+[noms]+[wins])
