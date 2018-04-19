@@ -1,0 +1,501 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Welcome to the file where we finally start doing some modeling. Lets start by grabbing our good old analytics store.
+
+The first step here is to import out most important libraries:
+```{r}
+library(DBI)
+library(RSQLite)
+library(caret)
+library(factoextra)
+library(ROCR)
+library(class)
+```
+
+Then, for simplicity and ease of access, we will set our working directory to the folder in which we are working.  If you are actually running this notebook instead of just looking at it, remember to change the name of the location to the one of your choosing.
+```{r}
+currentwd <- getwd() #so that I can re set my working directory after I'm done
+setwd("C:/Users/avg38/Documents/cornell/spring 2018/ds 4100/OscarPredictor")
+```
+Now that all the setup is done, lets connect to our database.
+```{r}
+con <- dbConnect(drv=RSQLite::SQLite(), dbname="moviedata.db")
+dbListTables(con) #sanity check - should show 7 names
+```
+
+Lets kick this off now and grab our table:
+```{r}
+movies <- dbGetQuery(con, "select * from moviesfinal")
+movies
+```
+Now we can close our connection.  And just in case, make a copy of our dataset for manipulation purposes.
+```{r}
+dbDisconnect(con)
+setwd(currentwd)
+stmovies <- movies
+```
+Now the first thing we have to do is standardize our numerical features - all of them are on vastly different scales.  We'll use a zscore standardization to do this.
+```{r}
+stmovies$budget <- (stmovies$budget - mean(stmovies$budget))/sd(stmovies$budget)
+stmovies$revenue <- (stmovies$revenue - mean(stmovies$revenue))/sd(stmovies$revenue)
+stmovies$runtime <- (stmovies$runtime - mean(stmovies$runtime))/sd(stmovies$runtime)
+stmovies$popularity <- (stmovies$popularity - mean(stmovies$popularity))/sd(stmovies$popularity)
+stmovies$budget <- (stmovies$budget - mean(stmovies$budget))/sd(stmovies$budget)
+stmovies$average_rating <- (stmovies$average_rating - mean(stmovies$average_rating))/sd(stmovies$average_rating)
+stmovies$num_votes <- (stmovies$num_votes - mean(stmovies$num_votes))/sd(stmovies$num_votes)
+stmovies$total_actor_credits <- (stmovies$total_actor_credits - mean(stmovies$total_actor_credits))/sd(stmovies$total_actor_credits)
+stmovies$average_actor_popularity <- (stmovies$average_actor_popularity-mean(stmovies$average_actor_popularity))/sd(stmovies$average_actor_popularity)
+stmovies$actor_oscar_nominations <- (stmovies$actor_oscar_nominations - mean(stmovies$actor_oscar_nominations))/sd(stmovies$actor_oscar_nominations)
+stmovies$actor_oscar_wins <- (stmovies$actor_oscar_wins - mean(stmovies$actor_oscar_wins))/sd(stmovies$actor_oscar_wins)
+stmovies$total_director_credits <- (stmovies$total_director_credits - mean(stmovies$total_director_credits))/sd(stmovies$total_director_credits)
+
+stmovies$average_director_popularity <- (stmovies$average_director_popularity - mean(stmovies$average_director_popularity))/sd(stmovies$average_director_popularity)
+
+stmovies$director_oscar_nominations <- (stmovies$director_oscar_nominations - mean(stmovies$director_oscar_nominations))/sd(stmovies$director_oscar_nominations)
+
+stmovies$director_oscar_wins <- (stmovies$director_oscar_wins - mean(stmovies$director_oscar_wins))/sd(stmovies$director_oscar_wins)
+```
+First things first, lets split our dataset based on the categories:
+```{r}
+bestpicture <- stmovies[stmovies$category == "BEST PICTURE",]
+bestanim <- stmovies[stmovies$category == "ANIMATED FEATURE FILM",]
+```
+
+This is because the two categories are pretty strictly distinct - movies like _Toy Story 3_ and _Up_ that got nominated for both are rare - in fact, those are the only two such movies in this dataset. So, generally, a nominee for Animated Feature won't end up getting a nomination for Best Picture.
+
+Now lets make strictly numerical versions of each one.
+```{r}
+bpnumeric <- bestpicture[,c("budget", "revenue", "runtime", "popularity", "average_rating",
+            "num_votes", "total_actor_credits", "average_actor_popularity",
+            "actor_oscar_nominations", "actor_oscar_wins", "total_director_credits",
+            "average_director_popularity", "director_oscar_nominations", "director_oscar_wins", "nominee", "winner")]
+banumeric <- bestanim[,c("budget", "revenue", "runtime", "popularity", "average_rating",
+            "num_votes", "total_actor_credits", "average_actor_popularity",
+            "actor_oscar_nominations", "actor_oscar_wins", "total_director_credits",
+            "average_director_popularity", "director_oscar_nominations", "director_oscar_wins", "nominee", "winner")]
+```
+We also left the classification variables in, just in case.  Next, lets set up the training and testing set.  We'll reserve 20% of the data for testing - thats about 500 test cases for the best picture.  There are only 200 rows in the best animated feature dataset, but an 80-20 split should still work, if not optimally.
+```{r}
+set.seed(9876)
+bpsample <- sample(nrow(bpnumeric), nrow(bpnumeric)*.80)
+bptrain <- bpnumeric[bpsample,]
+bptest <- bpnumeric[-bpsample,]
+```
+Lets start with a quick PCA on the best picture training set.
+
+The graphing and prediction methods coming up are adapted from http://www.sthda.com/english/articles/31-principal-component-methods-in-r-practical-guide/118-principal-component-analysis-in-r-prcomp-vs-princomp/.
+```{r}
+pcares <- prcomp(bptrain[,1:14])
+fviz_eig(pcares)
+```
+The first 9 PCs are enough to tackle 90% of the variance it seems.  
+So lets look at their correlations - highly positively correlated values point in the same directions, whereas negatively correlated variables point in opposite directions.
+```{r}
+fviz_pca_var(pcares,
+             col.var = "contrib", # Color by contributions to the PC
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE     # Avoid text overlapping
+             )
+```
+
+So, it seems that everything is positively correlated to varying degrees.
+
+lets take a look at the actual eigenvalues:
+```{r}
+get_eigenvalue(pcares)
+```
+
+So, yeah, 9 or 10 dimensions gets really good accuracy according to the variance percentages.  We'll make use of this information going forward.
+
+We'll begin with an analysis of hte best pictures category, beginning with a logistic regression. Remember, for our purposes, nomination and victory are mutually exclusive for our purposes.
+```{r}
+logmodbpnom <- glm(nominee~.-winner, data = bptrain, family = binomial)
+summary(logmodbpnom)
+```
+So immediately we see we have some tuning to do, as there are a lot of variables with p > .05.  Lets start doing some backwards elimination:
+```{r}
+logmodbpnom <- glm(nominee~.-winner-actor_oscar_nominations, data = bptrain, family = binomial)
+summary(logmodbpnom)
+```
+```{r}
+logmodbpnom <- glm(nominee~.-winner-actor_oscar_nominations-runtime, data = bptrain, family = binomial)
+summary(logmodbpnom)
+```
+
+```{r}
+logmodbpnom <- glm(nominee~.-winner-actor_oscar_nominations-runtime-average_actor_popularity, data = bptrain, family = binomial)
+summary(logmodbpnom)
+```
+
+```{r}
+logmodbpnom <- glm(nominee~.-winner-actor_oscar_nominations-runtime-average_actor_popularity-average_director_popularity, data = bptrain, family = binomial)
+summary(logmodbpnom)
+```
+```{r}
+logmodbpnom <- glm(nominee~.-winner-actor_oscar_nominations-runtime-average_actor_popularity-average_director_popularity-popularity, data = bptrain, family = binomial)
+summary(logmodbpnom)
+```
+
+```{r}
+logmodbpnom <- glm(nominee~.-winner-actor_oscar_nominations-runtime-average_actor_popularity-average_director_popularity-popularity-num_votes, data = bptrain, family = binomial)
+summary(logmodbpnom)
+```
+```{r}
+  logmodbpnom <- glm(nominee~.-winner-actor_oscar_nominations-runtime-average_actor_popularity-average_director_popularity-popularity-num_votes-total_actor_credits, data = bptrain, family = binomial)
+summary(logmodbpnom)
+```
+
+
+All remaining variables now have p-values below .05, so this model should be ideal.  And look, just 7 variables remain in the final model!  Lets try to make some predictions with this now:
+```{r}
+bpnompreds <- predict(logmodbpnom, newdata = bptest, type = "response")
+```
+
+
+Lets check the confusion matrix for this at, say a .5 cutoff.
+```{r}
+table(bptest$nominee, bpnompreds > 0.5)
+```
+So, a lot of false negatives, but its still a 97% accuracy. Maybe we try a lower cutoff?
+```{r}
+table(bptest$nominee, bpnompreds > 0.1)
+```
+Better at correctly predicting nominees, but worse overall... this one gave nominations to 24 movies that weren't nominated.  Let's check the ROC:
+```{r}
+rocpred <- prediction(bpnompreds, bptest$nominee)
+rocperf <- performance(rocpred, 'tpr', 'fpr')
+plot(rocperf, colorize = TRUE, text.adj = c(-.2, 1.7))
+performance(rocpred, 'auc')
+```
+AUC is .95, which points to a really good model.  I don't really trust it due to the sheer number of 0s in the dataset - only 18 out of 504 movies were nominated for oscars! Unfortunately this is kind of unavoidable - in the full dataset of over 2500 movies, there are only 100 Oscar nominees (115 if you also include winners).  If anything, this means that a stringent model - one with more false negatives - is probably more desirable.
+
+Lets try the same thing for the winners:
+```{r}
+logmodbpwin <- glm(winner~.-nominee, data = bptrain, family = binomial)
+summary(logmodbpwin)
+```
+Oh boy, time for a lot of back propogation! Only 5 variables are below p=.05.
+```{r}
+logmodbpwin <- glm(winner~.-nominee-runtime, data = bptrain, family = binomial)
+summary(logmodbpwin)
+```
+```{r}
+logmodbpwin <- glm(winner~.-nominee-runtime-average_director_popularity, data = bptrain, family = binomial)
+summary(logmodbpwin)
+```
+
+```{r}
+logmodbpwin <- glm(winner~.-nominee-runtime-average_director_popularity-average_actor_popularity, data = bptrain, family = binomial)
+summary(logmodbpwin)
+```
+```{r}
+logmodbpwin <- glm(winner~.-nominee-runtime-average_director_popularity-average_actor_popularity-num_votes, data = bptrain, family = binomial)
+summary(logmodbpwin)
+```
+```{r}
+logmodbpwin <- glm(winner~.-nominee-runtime-average_director_popularity-average_actor_popularity-num_votes-popularity, data = bptrain, family = binomial)
+summary(logmodbpwin)
+```
+```{r}
+logmodbpwin <- glm(winner~.-nominee-runtime-average_director_popularity-average_actor_popularity-num_votes-popularity-actor_oscar_nominations, data = bptrain, family = binomial)
+summary(logmodbpwin)
+```
+```{r}
+logmodbpwin <- glm(winner~.-nominee-runtime-average_director_popularity-average_actor_popularity-num_votes-popularity-actor_oscar_nominations-actor_oscar_wins, data = bptrain, family = binomial)
+summary(logmodbpwin)
+```
+```{r}
+logmodbpwin <- glm(winner~.-nominee-runtime-average_director_popularity-average_actor_popularity-num_votes-popularity-actor_oscar_nominations-actor_oscar_wins-director_oscar_nominations, data = bptrain, family = binomial)
+summary(logmodbpwin)
+```
+```{r}
+logmodbpwin <- glm(winner~.-nominee-runtime-average_director_popularity-average_actor_popularity-num_votes-popularity-actor_oscar_nominations-actor_oscar_wins-director_oscar_nominations-total_director_credits, data = bptrain, family = binomial)
+summary(logmodbpwin)
+```
+And after a veritable culling of variables, we have just 2 variables remaining that have p < .05. Lets try to predict with whats left:
+```{r}
+bpwinpreds <- predict(logmodbpwin, newdata = bptest, type = "response")
+```
+Lets start with the confusion matrix again:
+```{r}
+table(bptest$winner, bpwinpreds > .5)
+```
+Oh joy.  Lets turn that cutoff down:
+```{r}
+table(bptest$winner, bpwinpreds > .04)
+```
+Fun fact, that first confusion matrix has an accuracy of 99% despite being utter nonsense.  This latest one is much better about actually predicting winners and also has an accuracy of 99%.  Looking at the ROC and AUC:
+```{r}
+rocpred <- prediction(bpwinpreds, bptest$winner)
+rocperf <- performance(rocpred, 'tpr', 'fpr')
+plot(rocperf, colorize = TRUE, text.adj = c(-.2, 1.7))
+performance(rocpred, 'auc')
+```
+Once again, AUC is .9.  Im starting to think that using logistic regression was just a bad idea - its too extreme.  Maybe and SVM will do better?
+
+Lets try it!  Code is adapted from http://dataaspirant.com/2017/01/19/support-vector-machine-classifier-implementation-r-caret-package/
+```{r}
+trctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+
+bptrain$nominee <- as.factor(bptrain$nominee)
+bptest$nominee <- as.factor(bptest$nominee)
+bptrain$winner <- as.factor(bptrain$winner)
+bptest$winner <- as.factor(bptest$winner)
+
+svmbpnom <- train(nominee ~.-winner, data = bptrain, method = "svmLinear",
+                 trControl=trctrl,
+                 preProcess = c("center", "scale"),
+                 tuneLength = 10)
+svmbpnom
+```
+Looking good so far.  Lets try to predict now:
+```{r}
+svmbpnompred <- predict(svmbpnom, newdata = bptest)
+svmbpnompred
+```
+Awesome! They're all 0.  It's not even worth going to the winner predictions because that set has even more 0s than this one, and this is already giving me all 0s.
+
+I can try one more thing - a quick decision tree. 
+```{r}
+trctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+dtreebpnom <- train(nominee ~.-winner, data = bptrain, method = "rpart",
+                   parms = list(split = "information"),
+                   trControl=trctrl,
+                   tuneLength = 10)
+dtreebpnom
+```
+I''m suspicious already.  Who knew I would come to hate high accuracies?
+```{r}
+dtreebpnompred <- predict(dtreebpnom, newdata = bptest)
+dtreebpnompred
+```
+Oh look, 1 nominee.  in 500 movies.  This one is also so much worse than logistic regression that its not worth moving forward with it.  
+
+Because of how bad all of these ended up being, we'll stick to just logistic regression for the best animated feature predictions.
+
+We start by making the train-test split:
+```{r}
+set.seed(9876)
+basample <- sample(nrow(banumeric), nrow(banumeric)*.80)
+batrain <- banumeric[basample,]
+batest <- banumeric[-basample,]
+```
+
+Lets start with nominees again:
+```{r}
+logmodbanom <- glm(nominee~.-winner, data = batrain, family = binomial)
+summary(logmodbanom)
+```
+Backwards elimination.  A lot of it.  Here we go:
+```{r}
+logmodbanom <- glm(nominee~.-winner-runtime, data = batrain, family = binomial)
+summary(logmodbanom)
+```
+```{r}
+logmodbanom <- glm(nominee~.-winner-runtime-director_oscar_wins, data = batrain, family = binomial)
+summary(logmodbanom)
+```
+```{r}
+logmodbanom <- glm(nominee~.-winner-runtime-director_oscar_wins-revenue, data = batrain, family = binomial)
+summary(logmodbanom)
+```
+```{r}
+logmodbanom <- glm(nominee~.-winner-runtime-director_oscar_wins-revenue-budget, data = batrain, family = binomial)
+summary(logmodbanom)
+```
+```{r}
+logmodbanom <- glm(nominee~.-winner-runtime-director_oscar_wins-revenue-budget-actor_oscar_nominations, data = batrain, family = binomial)
+summary(logmodbanom)
+```
+
+```{r}
+logmodbanom <- glm(nominee~.-winner-runtime-director_oscar_wins-revenue-budget-actor_oscar_nominations-actor_oscar_wins, data = batrain, family = binomial)
+summary(logmodbanom)
+```
+```{r}
+logmodbanom <- glm(nominee~.-winner-runtime-director_oscar_wins-revenue-budget-actor_oscar_nominations-actor_oscar_wins-average_actor_popularity, data = batrain, family = binomial)
+summary(logmodbanom)
+```
+
+```{r}
+logmodbanom <- glm(nominee~.-winner-runtime-director_oscar_wins-revenue-budget-actor_oscar_nominations-actor_oscar_wins-average_actor_popularity-average_director_popularity, data = batrain, family = binomial)
+summary(logmodbanom)
+```
+```{r}
+logmodbanom <- glm(nominee~.-winner-runtime-director_oscar_wins-revenue-budget-actor_oscar_nominations-actor_oscar_wins-average_actor_popularity-average_director_popularity-director_oscar_nominations, data = batrain, family = binomial)
+summary(logmodbanom)
+```
+```{r}
+logmodbanom <- glm(nominee~.-winner-runtime-director_oscar_wins-revenue-budget-actor_oscar_nominations-actor_oscar_wins-average_actor_popularity-average_director_popularity-director_oscar_nominations-total_director_credits, data = batrain, family = binomial)
+summary(logmodbanom)
+```
+```{r}
+logmodbanom <- glm(nominee~.-winner-runtime-director_oscar_wins-revenue-budget-actor_oscar_nominations-actor_oscar_wins-average_actor_popularity-average_director_popularity-director_oscar_nominations-total_director_credits-popularity, data = batrain, family = binomial)
+summary(logmodbanom)
+```
+```{r}
+logmodbanom <- glm(nominee~.-winner-runtime-director_oscar_wins-revenue-budget-actor_oscar_nominations-actor_oscar_wins-average_actor_popularity-average_director_popularity-director_oscar_nominations-total_director_credits-popularity-total_actor_credits, data = batrain, family = binomial)
+summary(logmodbanom)
+```
+```{r}
+logmodbanom <- glm(nominee~.-winner-runtime-director_oscar_wins-revenue-budget-actor_oscar_nominations-actor_oscar_wins-average_actor_popularity-average_director_popularity-director_oscar_nominations-total_director_credits-popularity-total_actor_credits-num_votes, data = batrain, family = binomial)
+summary(logmodbanom)
+```
+All variables are now below p=.05.  There is only one of them - the average rating of the movie.  Lets see what predictions give us:
+```{r}
+banompreds <- predict(logmodbanom, newdata = batest, type = "response")
+```
+
+
+Lets check the confusion matrix for this at, say a .5 cutoff.
+```{r}
+table(batest$nominee, banompreds > 0.5)
+```
+So, a lot of false negatives, and only 62.5% accuracy.  Maybe lower the cutoff?
+```{r}
+table(batest$nominee, banompreds > 0.09)
+```
+Better at correctly predicting nominees, but worse overall... What does the ROC look like?
+```{r}
+rocpred <- prediction(banompreds, batest$nominee)
+rocperf <- performance(rocpred, 'tpr', 'fpr')
+plot(rocperf, colorize = TRUE, text.adj = c(-.2, 1.7))
+performance(rocpred, 'auc')
+```
+Yeah, ROC isn't great - only .67.  Maybe looking at the winners will be a better time?  Lets try it out:
+```{r}
+logmodbawin <- glm(winner~.-nominee, data = batrain, family = binomial)
+summary(logmodbawin)
+```
+So, I don't think backwards elimination will help us here. Lets try a few iterations just to check:
+```{r}
+logmodbawin <- glm(winner~.-nominee-director_oscar_wins, data = batrain, family = binomial)
+summary(logmodbawin)
+```
+```{r}
+logmodbawin <- glm(winner~.-nominee-director_oscar_wins-budget, data = batrain, family = binomial)
+summary(logmodbawin)
+```
+```{r}
+logmodbawin <- glm(winner~.-nominee-director_oscar_wins-budget-average_rating, data = batrain, family = binomial)
+summary(logmodbawin)
+```
+
+```{r}
+logmodbawin <- glm(winner~.-nominee-director_oscar_wins-budget-average_rating-popularity, data = batrain, family = binomial)
+summary(logmodbawin)
+```
+```{r}
+logmodbawin <- glm(winner~.-nominee-director_oscar_wins-budget-average_rating-popularity-average_actor_popularity, data = batrain, family = binomial)
+summary(logmodbawin)
+```
+```{r}
+logmodbawin <- glm(winner~.-nominee-director_oscar_wins-budget-average_rating-popularity-average_actor_popularity-average_director_popularity, data = batrain, family = binomial)
+summary(logmodbawin)
+```
+```{r}
+logmodbawin <- glm(winner~.-nominee-director_oscar_wins-budget-average_rating-popularity-average_actor_popularity-average_director_popularity-total_actor_credits, data = batrain, family = binomial)
+summary(logmodbawin)
+```
+```{r}
+logmodbawin <- glm(winner~.-nominee-director_oscar_wins-budget-average_rating-popularity-average_actor_popularity-average_director_popularity-total_actor_credits-actor_oscar_wins, data = batrain, family = binomial)
+summary(logmodbawin)
+```
+
+```{r}
+logmodbawin <- glm(winner~.-nominee-director_oscar_wins-budget-average_rating-popularity-average_actor_popularity-average_director_popularity-total_actor_credits-actor_oscar_wins-revenue, data = batrain, family = binomial)
+summary(logmodbawin)
+```
+```{r}
+logmodbawin <- glm(winner~.-nominee-director_oscar_wins-budget-average_rating-popularity-average_actor_popularity-average_director_popularity-total_actor_credits-actor_oscar_wins-revenue-total_director_credits, data = batrain, family = binomial)
+summary(logmodbawin)
+```
+```{r}
+logmodbawin <- glm(winner~.-nominee-director_oscar_wins-budget-average_rating-popularity-average_actor_popularity-average_director_popularity-total_actor_credits-actor_oscar_wins-revenue-total_director_credits-director_oscar_nominations, data = batrain, family = binomial)
+summary(logmodbawin)
+```
+```{r}
+logmodbawin <- glm(winner~.-nominee-director_oscar_wins-budget-average_rating-popularity-average_actor_popularity-average_director_popularity-total_actor_credits-actor_oscar_wins-revenue-total_director_credits-director_oscar_nominations-actor_oscar_nominations, data = batrain, family = binomial)
+summary(logmodbawin)
+```
+Two variables left this time, runtime and num_votes!  Not average rating though, unlike for the nominees.  So longer, well-known nominees for the category will win?  Lets see if this fits well.
+```{r}
+bawinpreds <- predict(logmodbawin, newdata = batest, type = "response")
+```
+
+
+Lets check the confusion matrix for this at, say a .5 cutoff.
+```{r}
+table(batest$winner, bawinpreds > 0.5)
+```
+Amazingly, this is perfect.  There must be some mistake...
+```{r}
+table(batest$winner, bawinpreds > 0.09)
+```
+Loosening the cutoff actually leads to some error.  Somehow, I stumbled on to a perfect model, which makes me immediately distrust it - perfect models shouldn't exist...but lets go with it for now.  Lets check the ROC, finally:
+```{r}
+rocpred <- prediction(bawinpreds, batest$winner)
+rocperf <- performance(rocpred, 'tpr', 'fpr')
+plot(rocperf, colorize = TRUE, text.adj = c(-.2, 1.7))
+performance(rocpred, 'auc')
+```
+There is something up with this, the AUC shouldn't be 1.  Unfortunately I'm not quite equipped to go digging for the issue, nor do I have the time.
+
+So, lets see if this holds up.  We'll try to predict the nominees and winners of the Oscars for the most recent iteration.
+
+First, we set the release dates as date type variables:
+```{r}
+bestpicture$release_date <- as.Date(bestpicture$release_date, "%Y-%m-%d")
+```
+
+Next, we subset:
+```{r}
+bp2017 <- bestpicture[bestpicture$release_date >= as.Date("2017-01-01"),]
+```
+And now, the nominees are:
+```{r}
+nombp2017 <- predict(logmodbpnom, newdata = bp2017, type = "response")
+table(bp2017$nominee, nombp2017>.1)
+```
+With that cutoff, we get that our nominees are:
+```{r}
+bp2017[nombp2017>.1,"title"]
+```
+And our predicted winner(s):
+```{r}
+winbp2017 <- predict(logmodbpwin, newdata = bp2017, type="response")
+table(bp2017$winner, winbp2017>.04)
+```
+Close! our reported winners are:
+```{r}
+bp2017[winbp2017>.04,"title"]
+```
+The winner was, in fact, _The Shape Of Water_.
+
+Now time for the best animated feature!
+```{r}
+bestanim$release_date <- as.Date(bestanim$release_date, "%Y-%m-%d")
+ba2017 <- bestanim[bestanim$release_date >= as.Date("2017-01-01"),]
+```
+And now, your nominees for best animated feature:
+```{r}
+nomba2017 <- predict(logmodbanom, newdata = ba2017, type = "response")
+table(ba2017$nominee, nomba2017>.09)
+```
+The titles are:
+```{r}
+ba2017[nomba2017>.09, "title"]
+```
+As for the winner:
+```{r}
+winba2017 <- predict(logmodbawin, newdata = ba2017, type = "response")
+table(ba2017$winner, winba2017>.09)
+```
+And the title is:
+```{r}
+ba2017[winba2017>.09, "title"]
+```
+_Coco_ Was indeed the winner!  So all in all, not bad.  We got a few more winners/nominees than we should, but we did cover the true winner.  So, at the very least, you could probably use these models to win an Oscars bet, but maybe not use it in the industry as a good classifier just yet.

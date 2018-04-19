@@ -23,8 +23,6 @@ innerHTML = browser.execute_script("return document.body.innerHTML") #returns th
 soup = BeautifulSoup(innerHTML)
 with io.open("oscarsdata.csv", 'w', newline='', encoding="utf-8") as oscarfile:
 	oscarwriter = csv.writer(oscarfile, delimiter=",")
-	headings = ["movie", "year", "category", "nominee", "winner"]
-	oscarwriter.writerow(headings)
 	#For all divs with an attribute "awards-result-chron", which is the result for each year
 	for result in soup.find_all("div", "awards-result-chron"): 
 		year = int(result.div.div.a.text[0:4]) #get the year of the award ceremony
@@ -49,8 +47,6 @@ innerHTML = browser.execute_script("return document.body.innerHTML")
 soup = BeautifulSoup(innerHTML)
 with io.open("actorawardsdata.csv",'w', newline='', encoding="utf-8") as actorawardsfile:
 	aawriter = csv.writer(actorawardsfile)
-	headings = ["name", "nominations", "wins"]
-	aawriter.writerow(headings)
 	for result in soup.find_all("div", "group-nominee-alpha"):
 		name = result.div.div.div.a.text
 		awardsnoms = result.find("div", "result-subgroup")
@@ -69,8 +65,6 @@ innerHTML = browser.execute_script("return document.body.innerHTML")
 soup = BeautifulSoup(innerHTML)
 with io.open("directorawards.csv",'w', newline='', encoding="utf-8") as directorawardsfile:
 	dawriter = csv.writer(directorawardsfile)
-	headings = ["name", "nominations", "wins"]
-	dawriter.writerow(headings)
 	for result in soup.find_all("div", "group-nominee-alpha"):
 		name = result.div.div.div.a.text
 		awardsnoms = result.find("div", "result-subgroup")

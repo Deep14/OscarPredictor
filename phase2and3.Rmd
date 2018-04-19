@@ -1,0 +1,799 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+#Phase 2: Data understanding
+If you are looking at this notebook, then you have already finished running both scrapers and the sql script to put this data into SQLite.  If you haven't done any of those yet, go do them before touching this R Notebook.
+
+*Exploring Data*
+
+The first step here is to import out most important libraries:
+```{r}
+library(DBI)
+library(RSQLite)
+```
+Then, for simplicity and ease of access, we will set our working directory to the folder in which we are working.  If you are actually running this notebook instead of just looking at it, remember to change the name of the location to the one of your choosing.
+```{r}
+currentwd <- getwd() #so that I can re set my working directory after I'm done
+setwd("C:/Users/avg38/Documents/cornell/spring 2018/ds 4100/OscarPredictor")
+```
+Now that all the setup is done, lets connect to our database.
+```{r}
+con <- dbConnect(drv=RSQLite::SQLite(), dbname="moviedata.db")
+dbListTables(con) #sanity check - should show six names
+```
+Now, I'm a bit more comfortable putting information together here in R, as the datasets themselves don't really have too much overlap, so we will do feature engineering here before putting the final analytical datastore back into the database.  We'll start by putting the tables into dataframes:
+```{r}
+actors <- dbGetQuery(con, "select * from actors")
+actoroscars <- dbGetQuery(con, "select * from actoroscars")
+directors <- dbGetQuery(con, "select * from directors")
+directoroscars <- dbGetQuery(con, "select * from directoroscars")
+movies <- dbGetQuery(con, "select * from movies")
+movieoscars <- dbGetQuery(con, "select * from movieoscars")
+```
+With that, all of our tables are now loaded into R. Lets take a look at them:
+```{r}
+actors
+```
+```{r}
+actoroscars
+```
+```{r}
+directors
+```
+
+```{r}
+directoroscars
+```
+```{r}
+movies
+```
+```{r}
+movieoscars
+```
+Note that the nomination and wins for the actors and directors are mutually exclusive - we count wins separately from nominations, so an actor with 5 nominations and 2 oscar wins has appeared at the Oscars 7 times.
+
+Our goal here is to add engineered features to our movies table to turn it into our final analytics store.
+Another note - in our movies table, any id of -1 means that the data was not found - so, we'll start by turning -1s into NAs. Similarly, movies wiht 0 for runtime and budget just have those values missing as well (I mean really, a movie taking 0 money to make? Running for 0 minutes?) so we will change those values into NA also.  We'll leave revenue as is - its possible for a movie to make 0 money if nobody sees it, or if it just goes straight to TV (like the Star Wars Christmas Special). 
+```{r}
+movies$budget[movies$budget == 0] <- NA
+movies$runtime[movies$runtime == 0] <- NA
+movies$actor_1[movies$actor_1 == -1] <- NA
+movies$actor_2[movies$actor_2 == -1] <- NA
+movies$actor_3[movies$actor_3 == -1] <- NA
+movies$actor_4[movies$actor_4 == -1] <- NA
+movies$actor_5[movies$actor_5 == -1] <- NA
+movies$actor_6[movies$actor_6 == -1] <- NA
+movies$actor_7[movies$actor_7 == -1] <- NA
+movies$actor_8[movies$actor_8 == -1] <- NA
+movies$actor_9[movies$actor_9 == -1] <- NA
+movies$actor_10[movies$actor_10 == -1] <- NA
+movies$director_1[movies$director_1 == -1] <- NA
+movies$director_2[movies$director_2 == -1] <- NA
+movies$director_3[movies$director_3 == -1] <- NA
+movies
+```
+
+So lets look through this data.  The first column that comes to mind is the budget column.
+
+Lets start by adding an old script that I have used before to run outlier detection.
+```{r}
+outlierKD <- function(dt, var) {
+     #this first step allows us to grab a variable from within a specific context - in this case,
+     #the uffi dataframe.
+     var_name <- eval(substitute(var),eval(dt))
+     na1 <- sum(is.na(var_name))
+     m1 <- mean(var_name, na.rm = T)
+     
+     #allows us to show multiple graphs in the same output window
+     par(mfrow=c(2, 2), oma=c(0,0,3,0))
+     boxplot(var_name, main="With outliers")
+     hist(var_name, main="With outliers", xlab=NA, ylab=NA)
+     
+     #boxplot.stats gives the necessary metrics for boxplot construction
+     #$out gives the calculated outliers using these stats
+     outlier <- boxplot.stats(var_name)$out
+     mo <- mean(outlier)
+     
+     #replaces the entries of the extracted variable with NA if they are in the outlier list
+     var_name <- ifelse(var_name %in% outlier, NA, var_name)
+     boxplot(var_name, main="Without outliers")
+     hist(var_name, main="Without outliers", xlab=NA, ylab=NA)
+     title("Outlier Check", outer=TRUE)
+     na2 <- sum(is.na(var_name))
+     cat("Outliers identified:", na2 - na1, "\n")
+     cat("Propotion (%) of outliers:", round((na2 - na1) / sum(!is.na(var_name))*100, 1), "\n")
+     cat("Mean of the outliers:", round(mo, 2), "\n")
+     m2 <- mean(var_name, na.rm = T)
+     cat("Mean without removing outliers:", round(m1, 2), "\n")
+     cat("Mean if we remove outliers:", round(m2, 2), "\n")
+     cat("Outlier Values: ", outlier, "\n")
+}
+```
+
+With this, we can do a quick outlier check for the budget column:
+```{r}
+outlierKD(movies, budget)
+```
+So, immediately, ,we have a problem - a HUGELY disproportionate amount of our data is centered around extremely low values.  So much so that most of the big Hollywood movies with their hundred million dollar budgets are considered outliers.
+
+As much as this presents an interesting commentary on the state of Hollywood, we simply cannot ignore big budget movies, since those are usually more likely to win Academy Awards - so we should try to look specifically at the low cost movies.  First, since we changed all the 0s to NAs, lets find out how many of those we really have:
+```{r}
+sum(is.na(movies$budget))/nrow(movies)
+```
+Well, looks like movie data reporting is really bad.  Just over 70% of our movies have no reported budgets.  If we make this even more stringent, and only count movies with budgets over $10,000 (which should barely cover equipment costs):
+```{r}
+(nrow(movies[movies$budget < 10000,]))/ nrow(movies)
+```
+So, 73% of our budget data is really suspect. So lets look at these films with badly reported budgets:
+```{r}
+badbudgets <- movies[movies$budget < 10000 | is.na(movies$budget),]
+badbudgets[order(badbudgets$budget),]
+```
+Running a quick google search on _Angus, Thongs and Perfect Snogging_ shows that this movie was produced and shot in the UK, had a theatrical release in the UK...and went straight to dvd in the USA, so it's data is reported in terms of pounds, not dollars.  Furthermore, this movie isn't even eligible for an Oscar - To be eligible for an Academy Award, the film must be shown in at least one theater in the Los Angeles area.  Its likely that this movie is not the only such ineligible movie in this dataset.
+
+It's also interesting to note that a lot of the following movies have very low vote counts.  Lets see if this holds true over most of these movies:
+```{r}
+hist(badbudgets$num_votes, breaks = 100)
+```
+Most of these movies have very, very few votes.  If we look only at that range between 0 and about 300:
+
+```{r}
+hist(badbudgets$num_votes, breaks = 100, xlim = c(0,300))
+```
+
+An overwhelming majority of these movies have less than 50 votes, so we could feasibly use this as a limit on our data to take out the worst of the data.  Plus, movies that are so poorly known are less likely to be able to even satisfy that earlier condition mentioned about Oscar eligibility, so they would never be considered for an oscar anyway.  Of course, some low-vote films may have had limited theatrical releases, but word of mouth tends to be big sources of advertising for smaller budget films, so bad films are more likely to have fewer votes, as people tend to only talk about good films.  Consider _100 Mile Rule (2004)_, which has 3 votes.  This isn't really a small-time film - its director, Brent Huff, has a pretty long history of directing movies, and its cast is known for well known works such as _The Notebook_, _Little Nicky_, _Planes, Trains, and Automobiles_, _Homeland_, _Friends_, _Law and Order_, and _Dawn of the Dead_.  This film has 3 votes, with an average rating of 3.2.  
+
+On the other hand we also have sleeper hits like _Primer (2004)_, which was a small independent film with a budget of $7000, had only 2 trained actors in a cast of 7 people, one of whom (Shane Carruth) also doubled up as director, screenwriter, composer, Producer, and editor. This film isn't well known, but even so, it has won several independent film awards, including the Grand Jury award at Sundance, which is no small feat. This film has 77 votes and an average score of 6.8.  So, we can say that its not the names of the cast, but the quality of the film that generates more votes. 
+
+So, lets see what the distribution looks like if we only look at movies with more than 50 votes.:
+```{r}
+badbudgets <- badbudgets[badbudgets$num_votes >=50,]
+hist(badbudgets$num_votes, breaks = 100)
+```
+The numbers here are much nicer, even if the distribution is still heavily skewed.  And, if we look at the number of movies that have existing budget values in this list:
+```{r}
+sum(!(is.na(badbudgets$budget)))
+sum(!(is.na(badbudgets$budget)))/nrow(badbudgets)
+badbudgets[order(badbudgets$budget),]
+```
+There are only 23 films that have non-NA values for budgets.  On the downside, this means ALL of the others are NA - almost 99% of the remaining data!  On the upside, though, its really easy to just look up the 23 movies and see why their numbers are so low. 
+
+It turns out that most of these are clerical errors - for example, according to Wikipedia, _Angus, Thongs and Perfect Snogging_ made about 700,000 pounds in the UK, which translates to just under 1 million dollars.  _Love, Wedding, Marriage_ had an estimated budget of $1.2 million.  _Fear Clinic_ had an estimated budget of \$1.1 million, _Death of a Superhero_ had a budget of \$3.8 million, etc.  In fact, the only movies that don't fit this pattern are _Primer_, which actually did have a budget of \$7000, _Escape from Tomorrow_ which had a budget of \$650000, _Black Water_, which had a budget of \$700000, and _From Prada to Nada_, _Stan Helsing_, and _Confessions of a Brazilian Call Girl_, which could not be found in any other site (IMDb, Wikipedia, etc). Looking at the values for these last three, we see that there is a big jump - from 35 on _Snow Dogs_ to 93 on _From Prada to Nada_, so lets say that these last 3 movies fit into the pattern shown by _Escape from Tomorrow_ and _Black Water_, so we multiply the given values by 1000.  So if I were to suggest cutoffs for useful data, based off of the exploration done so far, I would say movies should have at least 50 votes on TMDB, and a budget of at least 7000 to be in the eventual training/testing data.
+
+
+Next, we'll look at the data for revenues for these movies, starting again with outliers.
+```{r}
+outlierKD(movies, revenue)
+```
+Oh wow, this is even worse - so much of the data is 0 that *EVERYTHING ELSE* is considered an outlier.
+
+So, lets look at just how many 0s we have.
+```{r}
+nrow(movies[movies$revenue == 0,])/nrow(movies)
+```
+Just over 3/4ths of our data has no reported revenue. We could try to impute this data but that doesn't make much sense when 78% of it has to be imputed - since we would have to build a model to try and fill in the values the final collinearity analysis would suggest that we take out the revenue column anyway.
+
+And frankly, there's a small argument for taking out the revenue altogether from the analysis - take a look at this article:https://www.thoughtco.com/lowest-grossing-best-picture-winners-3875691
+
+_The Hurt Locker_, which made a very modest $17 million,  won Best Picture over James Cameron's _Avatar_ - the single highest grossing movie ever nominated for an Oscar at \$2.7 *billion*.  Seriously, this movie earned almost *14 times* the total earnings of _The Hurt Locker_ in its opening weekend alone.  
+
+Some more research reveals that most of the best picture nominees for 2018 didn't even break $100 million. So with all of this, we could say that we should just remove the column, but there is one place that this column might actually be useful - determining ineligible candidates for an Oscar.  These movies would have extremely low earnings consistent with not getting even a limited theatrical release.  We could check this by, say taking a look at all movies with earnings of less than, say, \$30,000.  This number isn't completely arbitrary, I went throught the films with low revenues starting at the higher end and just looked up movies randomly as I went down the list, and picked the point around which I started to see that most movies that had either direct to video releases or primarily overseas releases - which would usually disqualify a movie from an Academy Award, as it wouldn't be released in LA county.
+
+So with that, lets take a look at how these low-earning movies look:
+```{r}
+badrevenues <- movies[movies$revenue < 30000,]
+badrevenues[order(-badrevenues$revenue),]
+```
+
+Notice that a lot of these are documentaries, concert films, making-of movies and interviews, or tiny independent films.  Take _Blackaway_ for example.  This movie has some big names in it - Anthony Hopkins, Ray Liotta, Julia Stiles - and only made $16,000, since it was ONLY released to international cinemas before being released in the US over a year later.  So It seems like \$30000 is a fair  cutoff point.  You'll notice that this isn't a perfect cutoff - there are a few films grossing more that are also ineligible for an Oscar.  This is fine, I'd rather include inelegible films in my final dataset than remove eligible ones.
+
+You could also ask why I didn't look at popularity to help narrow this list down.  That would be because there are plenty of Oscar eligible movies that aren't popular because they're just plain bad - like _Transformers: Dark of the Moon_ or _X-Men Origins: Wolverine_.  We want to keep eligible films, good or not.
+
+Speaking of popularity, lets take a look at that column for outliers:
+```{r}
+outlierKD(movies,popularity)
+```
+As expected, most of our movies are low budget, low revenue so they won't be really popular.  What if we try this again on our "eligible movie" subset?
+```{r}
+outlierKD(movies[movies$revenue >= 30000,], popularity)
+```
+
+Still a lot of 0s, but its much more centralized around 10 now. Again, this makes sense - runaway blockbusters aren't necessarily the norm.  Speaking of, what happens if we only look at movies with at least 10 million in revenue?
+```{r}
+outlierKD(movies[movies$revenue >= 10000000,], popularity)
+```
+Still mostly centered around 10, and mostly normal looking after removing outliers, even if it has a long tail.
+
+However, we can't remove these outliers - most of them won Oscars after all, and that would throw off our classification attempts.
+
+What about the number of votes that each movie recieved?
+```{r}
+outlierKD(movies, num_votes)
+```
+
+As expected, most movies are relatively unknown, so we have a lot of 0s.  Changing our minimum won't change this fact, just because of the way this distribution is skewed.  And this kind of makes sense, only the really good or really bad movies get well known enough to warrent a bunch of votes, and there won't be a lot of those.
+
+Lets look at runtimes now:
+```{r}
+outlierKD(movies, runtime)
+```
+
+So I hadn't considered that there might be poor reporting even on the runtimes.  Why is there a movie with 1200 minutes of runtime? (Note, that 1200 minute "movie" looks more like a back to back recap of some fighting tournament?  The next closest is some indie flash-based animated movie.  Someone made a 600 minute movie entirely in flash? Seriously, that number is correct. I checked.)  Most of these, thankfully, are documentaries and concert videos that will end up getting removed through the revenue limits we will impose.  However, we cannot get rid of outliers completely here, not while we are considering the marathon films that are _The Lord of the Rings_ series.
+
+Now, lets check the ratings distributions:
+```{r}
+outlierKD(movies, average_rating)
+```
+
+Would you look at that, its mostly normal!  Of course, there are a lot of 0s and 10, but that comes from movies with very few votes - essentially movies that are so little known that all 10 viewers either hate the movie or love it.
+
+One last thing we'll look at is the distribution of the genres:
+```{r}
+genredists <- c(sum(movies$action), sum(movies$adventure), sum(movies$animation), sum(movies$comedy), sum(movies$crime), sum(movies$documentary), sum(movies$drama), sum(movies$family), sum(movies$fantasy), sum(movies$history), sum(movies$horror), sum(movies$music), sum(movies$mystery), sum(movies$romance), sum(movies$thriller), sum(movies$scifi), sum(movies$war), sum(movies$western))
+barplot(genredists, names.arg = c("action", "adventure", "animation", "comedy", "crime", "documentary", "drama", "family", "fantasy", "history", "horror","music", "mystery", "romance", "thriller", "scifi", "war", "western"))
+genredists
+```
+
+So, most of these movies are dramas, comedies, thrillers, action, horror, or some combination of those.  Good to know.
+
+Now, lets look at the distribution of credits for the actors:
+```{r}
+outlierKD(actors, movie_credits)
+```
+So I'd like to point out that the top two actors in terms of credits are Ron Jeremy and Evan stone.  DON'T look them up, they are NSFW.  Somehow, these actors must have gotten roles in non-adult films.  Also of note, Ron Jeremy is more popular that Jackie Chan.  Somehow.
+
+Anyway, changing the minimum of our outlier check won't do much here due to the shape of the distribution, and we can't really remove outliers here anyway as most of the best actors have just tons of credits.
+
+Looking at their popularity next:
+```{r}
+outlierKD(actors, popularity)
+```
+This falls into the same boat as the credits check - can't remove the outliers as the most popular actors are also the same ones in movies that win oscars.
+
+We'll do the same thing for directors, but it wont change much.
+```{r}
+outlierKD(directors, movie_credits)
+```
+Again, good directors have a lot more credits - just think of Speilberg.  Can't remove outliers here.
+
+```{r}
+outlierKD(directors, popularity)
+```
+
+I wasn't really expecting this one to be so heavily skewed, nearly all of the numbers are 0.  So everything is an outlier, really.  Can't remove them though, same reasoning as above.
+
+Now, these next couple ones are only actors and that have won or been nominated for oscars, so outliers cannot be removed.
+```{r}
+outlierKD(directoroscars, nominations)
+```
+```{r}
+outlierKD(directoroscars, wins)
+```
+```{r}
+outlierKD(actoroscars, nominations)
+```
+```{r}
+outlierKD(actoroscars, wins)
+```
+As expected, most values are really small, close to 0 or 1.  There are a few standouts, but not many.
+
+Now that we have a better understanding of our data, its time to compose everything together into a final analytical store.
+
+#Phase 3: Data Preparation
+
+*Data Cleaning*
+
+The first thing we'll have to do is remove any rows where all 10 actors or all 3 directors are NAs.  This is because these columns are nigh impossible to impute.  So if we have absolutely 0 information, we really have no other choice but to remove them. Now, since we know that the scraper fills in actors and directors from 1 to n, then we can basically remove any row that has na for actor_1, director_1, or both.
+```{r}
+movies <- movies[!(is.na(movies$actor_1) || is.na(movies$director_1)),]
+```
+
+Next, we'll fill in the real budgets for those 23 movies that we looked up.
+```{r}
+movies[movies$mid == 12689,]$budget <- 1000715
+movies[movies$mid == 59296,]$budget <- 1200000
+movies[movies$mid == 287524,]$budget <- 1100000
+movies[movies$mid == 91551,]$budget <- 4701196
+movies[movies$mid == 14424,]$budget <- 5000000
+movies[movies$mid == 14055,]$budget <- 8287000
+movies[movies$mid == 2196,]$budget <- 9000000
+movies[movies$mid == 57585,]$budget <- 10000000
+movies[movies$mid == 78383,]$budget <- 10000000
+movies[movies$mid == 208869,]$budget <- 6151538
+movies[movies$mid == 791,]$budget <- 18000000
+movies[movies$mid == 11237,]$budget <- 25000000
+movies[movies$mid == 21724,]$budget <- 25000000
+movies[movies$mid == 6933,]$budget <- 27000000
+movies[movies$mid == 1613,]$budget <- 27000000
+movies[movies$mid == 204436,]$budget <- 33746302
+movies[movies$mid == 11888,]$budget <- 35000000
+movies[movies$mid == 50217,]$budget <- 93000
+movies[movies$mid == 23988,]$budget <- 108000
+movies[movies$mid == 58235,]$budget <- 200000
+movies[movies$mid == 158752,]$budget <- 650000
+movies[movies$mid == 14138,]$budget <- 700000
+```
+Now, we'll remove rows based off the calculated limits from our exploration: $7000 budget and 50 vote minimum.
+```{r}
+nrow(movies)
+movies <- movies[movies$budget >= 7000,]
+movies <- movies[!(is.na(movies$budget)),]
+movies <- movies[movies$num_votes >= 50,]
+nrow(movies)
+```
+So, we've learned that in about the last 16 years of cinema, there have been *almost 10000* little known, low budget films that likely wouldn't have gotten eligibility for an oscar.  And thats even before the upcoming revenue check:
+```{r}
+movies <- movies[movies$revenue >= 30000,]
+movies
+```
+With that we lose another 1000 films, mostly independent, that wouldnt be eligible for oscars.
+```{r}
+outlierKD(movies, runtime)
+```
+As we can see from the quick runtime check made above, this set of limits has also cut out most of those obscenely long or laughably short films - the shortest film listed now is 63 minutes, 20 minutes greater than the Academy's 40 minute minimum to be considered a feature length film.  By the way, this 63 minute movie is _Winnie the Pooh_, in case you were wondering.   
+
+*Feature Engineering*
+Now all that's left is to add in a few engineered features - total actor credits, average actor popularity, total actor oscar nominations, total actor oscar wins, total director credits, average director popularity, total director oscar nominations, total director oscar wins, and the actual classification tab.  Lets start with the actor details.  Though, first, we need to get rid of just one more row - this movie has ids that are just garbage and dont exist anywhere.
+
+```{r}
+movies <- movies[-c(876),]
+```
+
+
+
+```{r}
+totactcreds <- numeric()
+avgactpop <- numeric()
+totactnoms <- numeric()
+totactwins <- numeric()
+for (movie in c(1:nrow(movies))) {
+  actorcredits <- ifelse(
+    nrow(actors[actors$aid==movies$actor_1[movie],])>0,
+    actors[actors$aid==movies$actor_1[movie],]$movie_credits,
+    10
+  )
+  actsumpop <- ifelse(
+    nrow(actors[actors$aid==movies$actor_1[movie],])>0,
+    actors[actors$aid==movies$actor_1[movie],]$popularity,
+    5
+  )
+  
+  #only way I could enforce a sort of lazy evaluation...
+  actnoms <- if(nrow(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_1[movie],]$actor_name,]) > 0){
+    if(!(is.na(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_1[movie],]$actor_name,]$nominations))){
+      actoroscars[actoroscars$name == actors[actors$aid == movies$actor_1[movie],]$actor_name,]$nominations
+    }
+  } else{
+    0
+  }
+  
+  
+  actwins <- ifelse(
+    nrow(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_1[movie],]$actor_name,]) > 0 &&
+      !(is.na(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_1[movie],]$actor_name,]$wins)),
+    actoroscars[actoroscars$name == actors[actors$aid == movies$actor_1[movie],]$actor_name,]$wins,
+    0) 
+  
+  if(!(is.na(movies$actor_2[movie]))){
+    actorcredits <- actorcredits + ifelse(
+    nrow(actors[actors$aid==movies$actor_2[movie],])>0,
+    actors[actors$aid==movies$actor_2[movie],]$movie_credits,
+    10
+  )
+    actsumpop <- actsumpop + ifelse(
+    nrow(actors[actors$aid==movies$actor_2[movie],])>0,
+    actors[actors$aid==movies$actor_2[movie],]$popularity,
+    5
+  )
+  if(nrow(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_2[movie],]$actor_name,]) > 0){
+    if(!(is.na(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_2[movie],]$actor_name,]$nominations))){
+      actnoms <- actnoms + actoroscars[actoroscars$name == actors[actors$aid == movies$actor_2[movie],]$actor_name,]$nominations
+    }
+  }
+    actwins <- actwins + ifelse(
+      nrow(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_2[movie],]$actor_name,]) > 0 &&
+        !(is.na(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_2[movie],]$actor_name,]$wins)),
+      actoroscars[actoroscars$name == actors[actors$aid == movies$actor_2[movie],]$actor_name,]$wins,
+      0) 
+  } else if(is.na(movies$actor_2[movie])){
+    totactcreds <- c(totactcreds, actorcredits)
+    avgactpop <- c(avgactpop, actsumpop)
+    totactnoms <- c(totactnoms, actnoms)
+    totactwins <- c(totactwins, actwins)
+    next
+  }
+  
+  if(!(is.na(movies$actor_3[movie]))){
+    actorcredits <- actorcredits + ifelse(
+    nrow(actors[actors$aid==movies$actor_3[movie],])>0,
+    actors[actors$aid==movies$actor_3[movie],]$movie_credits,
+    10
+  )
+    actsumpop <- actsumpop + ifelse(
+    nrow(actors[actors$aid==movies$actor_3[movie],])>0,
+    actors[actors$aid==movies$actor_3[movie],]$popularity,
+    5
+  )
+    
+  if(nrow(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_3[movie],]$actor_name,]) > 0){
+    if(!(is.na(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_3[movie],]$actor_name,]$nominations))){
+      actnoms <- actnoms + actoroscars[actoroscars$name == actors[actors$aid == movies$actor_3[movie],]$actor_name,]$nominations
+    }
+  }
+    actwins <- actwins + ifelse(
+      nrow(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_3[movie],]$actor_name,]) > 0 &&
+        !(is.na(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_3[movie],]$actor_name,]$wins)),
+      actoroscars[actoroscars$name == actors[actors$aid == movies$actor_3[movie],]$actor_name,]$wins,
+      0) 
+  } else if(is.na(movies$actor_3[movie])){
+    totactcreds <- c(totactcreds, actorcredits)
+    avgactpop <- c(avgactpop, actsumpop/2)
+    totactnoms <- c(totactnoms, actnoms)
+    totactwins <- c(totactwins, actwins)
+    next
+  }
+  
+  if(!(is.na(movies$actor_4[movie]))){
+    actorcredits <- actorcredits + ifelse(
+    nrow(actors[actors$aid==movies$actor_4[movie],])>0,
+    actors[actors$aid==movies$actor_4[movie],]$movie_credits,
+    10
+  )
+    actsumpop <- actsumpop + ifelse(
+    nrow(actors[actors$aid==movies$actor_4[movie],])>0,
+    actors[actors$aid==movies$actor_4[movie],]$popularity,
+    5
+  )
+    if(nrow(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_4[movie],]$actor_name,]) > 0){
+      if(!(is.na(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_4[movie],]$actor_name,]$nominations))){
+        actnoms <- actnoms + actoroscars[actoroscars$name == actors[actors$aid == movies$actor_4[movie],]$actor_name,]$nominations
+      }
+    }
+    actwins <- actwins + ifelse(
+      nrow(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_4[movie],]$actor_name,]) > 0 &&
+        !(is.na(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_4[movie],]$actor_name,]$wins)),
+      actoroscars[actoroscars$name == actors[actors$aid == movies$actor_4[movie],]$actor_name,]$wins,
+      0) 
+  } else if(is.na(movies$actor_4[movie])){
+    totactcreds <- c(totactcreds, actorcredits)
+    avgactpop <- c(avgactpop, actsumpop/3)
+    totactnoms <- c(totactnoms, actnoms)
+    totactwins <- c(totactwins, actwins)
+    next
+  }
+  
+  if(!(is.na(movies$actor_5[movie]))){
+    actorcredits <- actorcredits + ifelse(
+    nrow(actors[actors$aid==movies$actor_5[movie],])>0,
+    actors[actors$aid==movies$actor_5[movie],]$movie_credits,
+    10
+  )
+    actsumpop <- actsumpop + ifelse(
+    nrow(actors[actors$aid==movies$actor_5[movie],])>0,
+    actors[actors$aid==movies$actor_5[movie],]$popularity,
+    5
+  )
+    if(nrow(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_5[movie],]$actor_name,]) > 0){
+      if(!(is.na(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_5[movie],]$actor_name,]$nominations))){
+        actnoms <- actnoms + actoroscars[actoroscars$name == actors[actors$aid == movies$actor_5[movie],]$actor_name,]$nominations
+      }
+    }
+    actwins <- actwins + ifelse(
+      nrow(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_5[movie],]$actor_name,]) > 0 &&
+        !(is.na(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_5[movie],]$actor_name,]$wins)),
+      actoroscars[actoroscars$name == actors[actors$aid == movies$actor_5[movie],]$actor_name,]$wins,
+      0) 
+  } else if(is.na(movies$actor_5[movie])){
+    totactcreds <- c(totactcreds, actorcredits)
+    avgactpop <- c(avgactpop, actsumpop/4)
+    totactnoms <- c(totactnoms, actnoms)
+    totactwins <- c(totactwins, actwins)
+    next
+  }
+  
+  if(!(is.na(movies$actor_6[movie]))){
+    actorcredits <- actorcredits + ifelse(
+    nrow(actors[actors$aid==movies$actor_6[movie],])>0,
+    actors[actors$aid==movies$actor_6[movie],]$movie_credits,
+    10
+  )
+    actsumpop <- actsumpop + ifelse(
+    nrow(actors[actors$aid==movies$actor_6[movie],])>0,
+    actors[actors$aid==movies$actor_6[movie],]$popularity,
+    5
+  )
+    if(nrow(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_6[movie],]$actor_name,]) > 0){
+      if(!(is.na(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_6[movie],]$actor_name,]$nominations))){
+        actnoms <- actnoms + actoroscars[actoroscars$name == actors[actors$aid == movies$actor_6[movie],]$actor_name,]$nominations
+      }
+    } 
+    actwins <- actwins + ifelse(
+      nrow(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_6[movie],]$actor_name,]) > 0 &&
+        !(is.na(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_6[movie],]$actor_name,]$wins)),
+      actoroscars[actoroscars$name == actors[actors$aid == movies$actor_6[movie],]$actor_name,]$wins,
+      0) 
+  } else if(is.na(movies$actor_6[movie])){
+    totactcreds <- c(totactcreds, actorcredits)
+    avgactpop <- c(avgactpop, actsumpop/5)
+    totactnoms <- c(totactnoms, actnoms)
+    totactwins <- c(totactwins, actwins)
+    next
+  }
+  
+  if(!(is.na(movies$actor_7[movie]))){
+    actorcredits <- actorcredits + ifelse(
+    nrow(actors[actors$aid==movies$actor_7[movie],])>0,
+    actors[actors$aid==movies$actor_7[movie],]$movie_credits,
+    10
+  )
+    actsumpop <- actsumpop + ifelse(
+    nrow(actors[actors$aid==movies$actor_7[movie],])>0,
+    actors[actors$aid==movies$actor_7[movie],]$popularity,
+    5
+  )
+    if(nrow(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_7[movie],]$actor_name,]) > 0){
+      if(!(is.na(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_7[movie],]$actor_name,]$nominations))){
+        actnoms <- actnoms + actoroscars[actoroscars$name == actors[actors$aid == movies$actor_7[movie],]$actor_name,]$nominations
+      }
+    } 
+    actwins <- actwins + ifelse(
+      nrow(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_7[movie],]$actor_name,]) > 0 &&
+        !(is.na(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_7[movie],]$actor_name,]$wins)),
+      actoroscars[actoroscars$name == actors[actors$aid == movies$actor_7[movie],]$actor_name,]$wins,
+      0) 
+  } else if(is.na(movies$actor_7[movie])){
+    totactcreds <- c(totactcreds, actorcredits)
+    avgactpop <- c(avgactpop, actsumpop/6)
+    totactnoms <- c(totactnoms, actnoms)
+    totactwins <- c(totactwins, actwins)
+    next
+  }
+  
+  if(!(is.na(movies$actor_8[movie]))){
+    actorcredits <- actorcredits + ifelse(
+    nrow(actors[actors$aid==movies$actor_8[movie],])>0,
+    actors[actors$aid==movies$actor_8[movie],]$movie_credits,
+    10
+  )
+    actsumpop <- actsumpop + ifelse(
+    nrow(actors[actors$aid==movies$actor_8[movie],])>0,
+    actors[actors$aid==movies$actor_8[movie],]$popularity,
+    5
+  )
+     if(nrow(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_8[movie],]$actor_name,]) > 0){
+      if(!(is.na(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_8[movie],]$actor_name,]$nominations))){
+        actnoms <- actnoms + actoroscars[actoroscars$name == actors[actors$aid == movies$actor_8[movie],]$actor_name,]$nominations
+      }
+    } 
+    actwins <- actwins + ifelse(
+      nrow(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_8[movie],]$actor_name,]) > 0 &&
+        !(is.na(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_8[movie],]$actor_name,]$wins)),
+      actoroscars[actoroscars$name == actors[actors$aid == movies$actor_8[movie],]$actor_name,]$wins,
+      0) 
+  } else if(is.na(movies$actor_8[movie])){
+    totactcreds <- c(totactcreds, actorcredits)
+    avgactpop <- c(avgactpop, actsumpop/7)
+    totactnoms <- c(totactnoms, actnoms)
+    totactwins <- c(totactwins, actwins)
+    next
+  }
+  
+  if(!(is.na(movies$actor_9[movie]))){
+    actorcredits <- actorcredits + ifelse(
+    nrow(actors[actors$aid==movies$actor_9[movie],])>0,
+    actors[actors$aid==movies$actor_9[movie],]$movie_credits,
+    10
+  )
+    actsumpop <- actsumpop + ifelse(
+    nrow(actors[actors$aid==movies$actor_9[movie],])>0,
+    actors[actors$aid==movies$actor_9[movie],]$popularity,
+    5
+  )
+     if(nrow(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_9[movie],]$actor_name,]) > 0){
+      if(!(is.na(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_9[movie],]$actor_name,]$nominations))){
+        actnoms <- actnoms + actoroscars[actoroscars$name == actors[actors$aid == movies$actor_9[movie],]$actor_name,]$nominations
+      }
+    } 
+    actwins <- actwins + ifelse(
+      nrow(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_9[movie],]$actor_name,]) > 0 &&
+        !(is.na(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_9[movie],]$actor_name,]$wins)),
+      actoroscars[actoroscars$name == actors[actors$aid == movies$actor_9[movie],]$actor_name,]$wins,
+      0) 
+  } else if(is.na(movies$actor_9[movie])){
+    totactcreds <- c(totactcreds, actorcredits)
+    avgactpop <- c(avgactpop, actsumpop/8)
+    totactnoms <- c(totactnoms, actnoms)
+    totactwins <- c(totactwins, actwins)
+    next
+  }
+  
+  if(!(is.na(movies$actor_10[movie]))){
+    actorcredits <- actorcredits + ifelse(
+    nrow(actors[actors$aid==movies$actor_10[movie],])>0,
+    actors[actors$aid==movies$actor_10[movie],]$movie_credits,
+    10
+  )
+    actsumpop <- actsumpop + ifelse(
+    nrow(actors[actors$aid==movies$actor_10[movie],])>0,
+    actors[actors$aid==movies$actor_10[movie],]$popularity,
+    5
+  )
+     if(nrow(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_10[movie],]$actor_name,]) > 0){
+      if(!(is.na(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_10[movie],]$actor_name,]$nominations))){
+        actnoms <- actnoms + actoroscars[actoroscars$name == actors[actors$aid == movies$actor_10[movie],]$actor_name,]$nominations
+      }
+    }  
+    actwins <- actwins + ifelse(
+      nrow(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_10[movie],]$actor_name,]) > 0 &&
+        !(is.na(actoroscars[actoroscars$name == actors[actors$aid == movies$actor_10[movie],]$actor_name,]$wins)),
+      actoroscars[actoroscars$name == actors[actors$aid == movies$actor_10[movie],]$actor_name,]$wins,
+      0) 
+    
+    totactcreds <- c(totactcreds, actorcredits)
+    avgactpop <- c(avgactpop, actsumpop/10)
+    totactnoms <- c(totactnoms, actnoms)
+    totactwins <- c(totactwins, actwins)
+  } else if(is.na(movies$actor_10[movie])){
+    totactcreds <- c(totactcreds, actorcredits)
+    avgactpop <- c(avgactpop, actsumpop/9)
+    totactnoms <- c(totactnoms, actnoms)
+    totactwins <- c(totactwins, actwins)
+    next
+  }
+}
+```
+
+That was a huge loop...and we get to do it again for the director details as well:
+```{r}
+totdircreds <- numeric()
+avgdirpop <- numeric()
+totdirnoms <- numeric()
+totdirwins <- numeric()
+for (movie in c(1:nrow(movies))) {
+  directorcredits <-ifelse(nrow(directors[directors$did==movies$director_1[movie],])>0,
+    directors[directors$did==movies$director_1[movie],]$movie_credits,
+    5
+  )
+  dirsumpop <- ifelse(nrow(directors[directors$did==movies$director_1[movie],])>0,
+    directors[directors$did==movies$director_1[movie],]$popularity,
+    0
+  )
+  dirnoms <- ifelse(
+    nrow(directoroscars[directoroscars$name == directors[directors$did == movies$director_1[movie],]$director_name,]) > 0,
+    directoroscars[directoroscars$name == directors[directors$did == movies$director_1[movie],]$director_name,]$nominations,
+    0)  
+  dirwins <- ifelse(
+    nrow(directoroscars[directoroscars$name == directors[directors$did == movies$director_1[movie],]$director_name,]) > 0,
+    directoroscars[directoroscars$name == directors[directors$did == movies$director_1[movie],]$director_name,]$wins,
+    0) 
+  
+  if(!(is.na(movies$director_2[movie]))){
+    directorcredits <- directorcredits + ifelse(nrow(directors[directors$did==movies$director_2[movie],])>0,
+    directors[directors$did==movies$director_2[movie],]$movie_credits,
+    5
+  )
+    dirsumpop <- dirsumpop + ifelse(nrow(directors[directors$did==movies$director_2[movie],])>0,
+    directors[directors$did==movies$director_2[movie],]$popularity,
+    0
+  )
+    dirnoms <- dirnoms + ifelse(
+      nrow(directoroscars[directoroscars$name == directors[directors$did == movies$director_2[movie],]$director_name,]) > 0,
+      directoroscars[directoroscars$name == directors[directors$did == movies$director_2[movie],]$director_name,]$nominations,
+      0)  
+    dirwins <- dirwins + ifelse(
+      nrow(directoroscars[directoroscars$name == directors[directors$did == movies$director_2[movie],]$director_name,]) > 0,
+      directoroscars[directoroscars$name == directors[directors$did == movies$director_2[movie],]$director_name,]$wins,
+      0)
+  } else if(is.na(movies$director_2[movie])){
+    totdircreds <- c(totdircreds, directorcredits)
+    avgdirpop <- c(avgdirpop, dirsumpop)
+    totdirnoms <- c(totdirnoms, dirnoms)
+    totdirwins <- c(totdirwins, dirwins)
+    next
+  }
+  
+  if(!(is.na(movies$director_3[movie]))){
+    directorcredits <- directorcredits + ifelse(nrow(directors[directors$did==movies$director_3[movie],])>0,
+    directors[directors$did==movies$director_3[movie],]$movie_credits,
+    5
+  )
+    dirsumpop <- dirsumpop + ifelse(nrow(directors[directors$did==movies$director_3[movie],])>0,
+    directors[directors$did==movies$director_3[movie],]$popularity,
+    0
+  )
+    dirnoms <- dirnoms + ifelse(
+      nrow(directoroscars[directoroscars$name == directors[directors$did == movies$director_3[movie],]$director_name,]) > 0,
+      directoroscars[directoroscars$name == directors[directors$did == movies$director_3[movie],]$director_name,]$nominations,
+      0)  
+    dirwins <- dirwins + ifelse(
+      nrow(directoroscars[directoroscars$name == directors[directors$did == movies$director_3[movie],]$director_name,]) > 0,
+      directoroscars[directoroscars$name == directors[directors$did == movies$director_3[movie],]$director_name,]$wins,
+      0)
+    
+      totdircreds <- c(totdircreds, directorcredits)
+      avgdirpop <- c(avgdirpop, dirsumpop/3)
+      totdirnoms <- c(totdirnoms, dirnoms)
+      totdirwins <- c(totdirwins, dirwins)
+  } else if(is.na(movies$director_3[movie])){
+    totdircreds <- c(totdircreds, directorcredits)
+    avgdirpop <- c(avgdirpop, dirsumpop/2)
+    totdirnoms <- c(totdirnoms, dirnoms)
+    totdirwins <- c(totdirwins, dirwins)
+    next
+  }
+}
+```
+And with that, we have our engineered features. Note that, due to a persistent issue with the scraper - not all of the actor ids were found in the database for some reason - we are defaulting any actors that couldn't be found with 10 movie credit and 5 popularity, about the mean of each variable discovered from our data exploration. Lets add them on to our dataset:
+```{r}
+movies$total_actor_credits <- totactcreds
+movies$average_actor_popularity <- avgactpop
+movies$actor_oscar_nominations <- totactnoms
+movies$actor_oscar_wins <- totactwins
+movies$total_director_credits <- totdircreds
+movies$average_director_popularity <- avgdirpop
+movies$director_oscar_nominations <- totdirnoms
+movies$director_oscar_wins <- totdirwins
+```
+Almost Done!  The last bit we have to do is tack on the classifier variables.  Note that we have 3 categories here - not nominated, nominated, winner.  For us, we are treating the nomination category as mutually exclusive with the winner category.  This allows us to create dummy variables for this category - one for nominated, and one for winning.  Thus, if both are 0, then the movie is not nominated for an oscar at all.
+
+One more thing - _Up_ and _Toy Story 3_ are a bit special.  they're the only animated movies in this dataset that were nominated for both animated feature AND best picture.  So, we'll duplicate those rows first, and when we run into them, we'll handle them separately.
+
+first, duplicating the rows.  _Up_ is row 1123, so lets duplicate it:
+```{r}
+movies <- rbind(movies[c(1:1123),], movies[1123,], movies[c(1124:nrow(movies)),])
+```
+
+Next is _Toy Story 3_, which is row 778:
+```{r}
+movies <- rbind(movies[c(1:778),], movies[778,], movies[c(779:nrow(movies)),])
+```
+
+
+now lets add in our categories and our classification variables:
+```{r}
+category <- vector()
+nominated <- numeric()
+won <- numeric()
+ts3 <- FALSE
+up <- FALSE
+for (m in c(1:nrow(movies))) {
+  if(movies$title[m] == "Up" && up){
+    next
+  }
+  if(movies$title[m] == "Toy Story 3" && ts3){
+    next
+  }
+  if(nrow(movieoscars[movieoscars$movie == movies$title[m],]) > 0){
+    category<- c(category, movieoscars[movieoscars$movie == movies$title[m],]$category)
+    nominated <- c(nominated, movieoscars[movieoscars$movie == movies$title[m],]$nominee)
+    won <- c(won, movieoscars[movieoscars$movie == movies$title[m],]$winner)
+    if(movies$title[m] == "Up") up <- TRUE
+    if(movies$title[m] == "Toy Story 3") ts3 <- TRUE
+  }  else {
+    if(movies$animation[m] == 1) category <- c(category, "ANIMATED FEATURE FILM")
+    if(movies$animation[m] == 0) category <- c(category, "BEST PICTURE")
+    nominated <- c(nominated, 0)
+    won <- c(won, 0)
+  }
+}
+movies$category <- category
+movies$nominee <- nominated
+movies$winner <- won
+```
+
+
+And with that, our analytics dataset is complete.  Lets put it back into SQL so that the next guy (also me) can take a look at it and start modeling.
+```{r}
+dbWriteTable(con,name = "moviesfinal", value = movies, row.names = FALSE)
+```
+All finished! Lets double check if that worked:
+```{r}
+dbListTables(con) #sanity check - should show 7 names
+```
+Now that we're done, lets close this connection.
+```{r}
+dbDisconnect(con)
+setwd(currentwd)
+```
